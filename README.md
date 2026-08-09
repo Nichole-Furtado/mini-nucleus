@@ -1,5 +1,7 @@
 # mini-nucleus
 
+[Leia em Português](README.pt-BR.md)
+
 REST API for ticket/incident tracking, built with NestJS, Prisma and PostgreSQL. Used as a study/reference project for backend patterns commonly required in support/SLA tooling: layered architecture, typed persistence, input validation and containerized infra.
 
 ## Stack
