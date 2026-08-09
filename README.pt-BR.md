@@ -14,6 +14,7 @@ API REST para gestão de chamados/incidentes, construída com NestJS, Prisma e P
 - **Fila**: BullMQ (backend Redis) via `@nestjs/bullmq`
 - **Validação**: `class-validator` / `class-transformer`
 - **Configuração**: `@nestjs/config` (baseado em `.env`)
+- **Autenticação**: JWT via `@nestjs/jwt` + `@nestjs/passport`, `bcrypt` para hash de senha
 
 ## Arquitetura
 
@@ -61,12 +62,23 @@ POST /tickets ──▶ TicketsService.create()
                        resolvido?  → loga ok
 ```
 
+### Autenticação
+
+As rotas de `/tickets` são protegidas pelo `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)` no nível do controller), que delega para uma strategy `jwt` do Passport. `POST /auth/register` faz hash da senha com bcrypt e retorna um token assinado; `POST /auth/login` verifica as credenciais da mesma forma. O segredo e o tempo de expiração são lidos via `ConfigService` dentro de `JwtModule.registerAsync` — não direto de `process.env` no momento da decoração do módulo, o que rodaria antes do `ConfigModule` carregar o `.env` e assinaria os tokens com um segredo desatualizado/padrão.
+
+Envie o token como `Authorization: Bearer <token>` em qualquer requisição para `/tickets`.
+
 ### Estrutura do projeto
 
 ```
 src/
   main.ts                 # bootstrap da app, pipes globais
-  app.module.ts            # módulo raiz: Config, Cache (Redis), Bull, Prisma, Tickets
+  app.module.ts            # módulo raiz: Config, Cache (Redis), Bull, Prisma, Auth, Tickets
+  auth/
+    auth.controller.ts     # POST /auth/register, POST /auth/login
+    auth.service.ts        # hash de senha, checagem de credenciais, assinatura do token
+    jwt-auth.guard.ts       # guard usado nos controllers protegidos
+    strategies/jwt.strategy.ts
   prisma/
     prisma.service.ts      # instância do PrismaClient (adapter-pg), hooks de ciclo de vida
     prisma.module.ts       # módulo @Global que exporta o PrismaService
@@ -86,6 +98,14 @@ prisma/
 ## Modelo de domínio
 
 ```prisma
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
 model Ticket {
   id          String         @id @default(uuid())
   title       String
@@ -100,15 +120,17 @@ model Ticket {
 
 ## API
 
-| Método | Rota           | Body               | Descrição                        |
-|--------|----------------|--------------------|-----------------------------------|
-| POST   | `/tickets`     | `CreateTicketDto`  | Cria um ticket                   |
-| GET    | `/tickets`     | –                  | Lista os tickets, mais recentes primeiro |
-| GET    | `/tickets/:id` | –                  | Busca um ticket (404 se não existir) |
-| PATCH  | `/tickets/:id` | `UpdateTicketDto`  | Atualização parcial, incl. mudança de status |
-| DELETE | `/tickets/:id` | –                  | Remove um ticket                 |
+| Método | Rota              | Auth | Body               | Descrição                        |
+|--------|-------------------|------|--------------------|-----------------------------------|
+| POST   | `/auth/register`  | –    | `RegisterDto`      | Cria um usuário, retorna um JWT  |
+| POST   | `/auth/login`     | –    | `LoginDto`         | Verifica as credenciais, retorna um JWT |
+| POST   | `/tickets`        | JWT  | `CreateTicketDto`  | Cria um ticket                   |
+| GET    | `/tickets`        | JWT  | –                  | Lista os tickets, mais recentes primeiro |
+| GET    | `/tickets/:id`    | JWT  | –                  | Busca um ticket (404 se não existir) |
+| PATCH  | `/tickets/:id`    | JWT  | `UpdateTicketDto`  | Atualização parcial, incl. mudança de status |
+| DELETE | `/tickets/:id`    | JWT  | –                  | Remove um ticket                 |
 
-`CreateTicketDto` exige `title` (mínimo 3 caracteres); `description` e `priority` são opcionais. `UpdateTicketDto` torna todos os campos de `CreateTicketDto` opcionais e aceita adicionalmente `status`.
+`CreateTicketDto` exige `title` (mínimo 3 caracteres); `description` e `priority` são opcionais. `UpdateTicketDto` torna todos os campos de `CreateTicketDto` opcionais e aceita adicionalmente `status`. `RegisterDto` exige `name`, um `email` válido e `password` (mínimo 8 caracteres); `LoginDto` exige `email` e `password`.
 
 ## Rodando localmente
 
@@ -149,6 +171,5 @@ O generator `prisma-client-js` usado aqui exige um driver adapter explícito (`@
 
 ## Roadmap
 
-- Autenticação JWT / guards de rota
 - Pipeline de CI (lint, test, build) via GitHub Actions
 - Cobertura de testes unitários e e2e
