@@ -8,6 +8,8 @@ REST API for ticket/incident tracking, built with NestJS, Prisma and PostgreSQL.
 - **Framework**: NestJS 11 (TypeScript)
 - **ORM**: Prisma 7, `prisma-client-js` generator + `@prisma/adapter-pg` driver adapter
 - **Database**: PostgreSQL 16 (containerized)
+- **Cache**: Redis 7 via `@nestjs/cache-manager` + `@keyv/redis`
+- **Queue**: BullMQ (Redis-backed) via `@nestjs/bullmq`
 - **Validation**: `class-validator` / `class-transformer`
 - **Config**: `@nestjs/config` (`.env`-based)
 
@@ -35,18 +37,42 @@ PostgreSQL
 
 Validation happens at the edge: a global `ValidationPipe` (`main.ts`) checks every incoming body against its DTO before it reaches the controller method, and strips unknown fields (`whitelist: true`).
 
+### Caching
+
+`GET /tickets` and `GET /tickets/:id` are cached in Redis (30s TTL) through `TicketsService`, using the `CACHE_MANAGER` token from `@nestjs/cache-manager`. `create`, `update` and `remove` invalidate the relevant keys (`tickets:all` and `tickets:<id>`) so stale data isn't served after a write.
+
+### Async SLA check (BullMQ)
+
+Every created ticket enqueues a delayed job on the `sla` queue (`src/tickets/sla.processor.ts`). The delay is derived from `priority` (`src/tickets/sla.util.ts`) — shorter for `CRITICAL`, longer for `LOW`. When the job runs, `SlaProcessor` re-reads the ticket and logs a warning if it's still `OPEN`/`IN_PROGRESS`, or a confirmation if it was resolved in time. This models the "SLA monitoring" requirement without needing a full alerting stack: the job is a Nest provider (`WorkerHost`), backed by the same Redis instance as the cache.
+
+```
+POST /tickets ──▶ TicketsService.create()
+                       │
+                       ├─▶ Postgres (insert)
+                       └─▶ sla queue.add(delay = f(priority))
+                                  │
+                                  ▼ (after delay)
+                          SlaProcessor.process()
+                                  │
+                                  ▼
+                       still OPEN? → log warning
+                       resolved?   → log ok
+```
+
 ### Project structure
 
 ```
 src/
   main.ts                 # app bootstrap, global pipes
-  app.module.ts            # root module, wires ConfigModule/PrismaModule/TicketsModule
+  app.module.ts            # root module: Config, Cache (Redis), Bull, Prisma, Tickets
   prisma/
     prisma.service.ts      # PrismaClient instance (adapter-pg), lifecycle hooks
     prisma.module.ts       # @Global module exporting PrismaService
   tickets/
     tickets.controller.ts  # REST routes for /tickets
-    tickets.service.ts     # business logic, talks to PrismaService
+    tickets.service.ts     # business logic, cache read/invalidation, enqueues SLA job
+    sla.processor.ts       # BullMQ worker, checks ticket status after the SLA delay
+    sla.util.ts             # priority → delay mapping
     dto/
       create-ticket.dto.ts
       update-ticket.dto.ts
@@ -93,16 +119,19 @@ docker run -d --name mini-nucleus-db \
   -e POSTGRES_DB=mini_nucleus \
   -p 5432:5432 postgres:16
 
-# 2. install dependencies
+# 2. start Redis
+docker run -d --name mini-nucleus-redis -p 6379:6379 redis:7-alpine
+
+# 3. install dependencies
 npm install
 
-# 3. configure environment
+# 4. configure environment
 cp .env.example .env
 
-# 4. apply migrations
+# 5. apply migrations
 npx prisma migrate dev
 
-# 5. run
+# 6. run
 npm run start:dev
 ```
 
@@ -119,6 +148,5 @@ The `prisma-client-js` generator here requires an explicit driver adapter (`@pri
 ## Roadmap
 
 - JWT authentication / route guards
-- Redis for caching and async processing (BullMQ)
 - CI pipeline (lint, test, build) via GitHub Actions
 - Unit and e2e test coverage
