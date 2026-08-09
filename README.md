@@ -169,7 +169,20 @@ npx prisma studio
 
 The `prisma-client-js` generator here requires an explicit driver adapter (`@prisma/adapter-pg`) — `new PrismaClient()` without one throws `PrismaClientInitializationError` as of this version. `PrismaService` passes the adapter in its constructor, built from `DATABASE_URL`.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push/PR to `main`:
+
+1. checkout + Node 24 setup (with npm cache)
+2. `npm ci`
+3. `eslint` (no auto-fix — fails the build on any issue)
+4. `prisma migrate deploy` against a Postgres service container
+5. `nest build`
+6. unit tests (`npm test`)
+7. e2e tests (`npm run test:e2e`)
+
+Postgres and Redis run as GitHub Actions **service containers** (`postgres:16`, `redis:7-alpine`), each with a health check the job waits on before running migrations — this is what the e2e suite needs, since it boots the real `AppModule` (DB + cache + queue included), not a mocked one.
+
 ## Roadmap
 
-- CI pipeline (lint, test, build) via GitHub Actions
-- Unit and e2e test coverage
+- Unit and e2e test coverage beyond the generated defaults

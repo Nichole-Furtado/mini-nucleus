@@ -16,7 +16,13 @@ import { AuthModule } from './auth/auth.module';
     CacheModule.registerAsync({
       isGlobal: true,
       useFactory: () => ({
-        stores: [new Keyv({ store: new KeyvRedis(process.env.REDIS_URL ?? 'redis://localhost:6379') })],
+        stores: [
+          new Keyv({
+            store: new KeyvRedis(
+              process.env.REDIS_URL ?? 'redis://localhost:6379',
+            ),
+          }),
+        ],
       }),
     }),
     BullModule.forRoot({

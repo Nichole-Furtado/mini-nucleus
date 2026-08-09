@@ -27,11 +27,7 @@ export class TicketsService {
       data: { ...createTicketDto, slaDueAt: new Date(Date.now() + delay) },
     });
 
-    await this.slaQueue.add(
-      'check-sla',
-      { ticketId: ticket.id },
-      { delay },
-    );
+    await this.slaQueue.add('check-sla', { ticketId: ticket.id }, { delay });
     await this.invalidateListCache();
 
     return ticket;
