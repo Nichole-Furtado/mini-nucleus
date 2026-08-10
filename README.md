@@ -1,52 +1,52 @@
 # mini-nucleus
 
-[Leia em Português](README.pt-BR.md)
+[Read in English](README.en.md)
 
-REST API for ticket/incident tracking, built with NestJS, Prisma and PostgreSQL. Used as a study/reference project for backend patterns commonly required in support/SLA tooling: layered architecture, typed persistence, input validation and containerized infra.
+API REST para gestão de chamados/incidentes, construída com NestJS, Prisma e PostgreSQL. Usado como projeto de estudo/referência para padrões de backend comuns em ferramentas de suporte/SLA: arquitetura em camadas, persistência tipada, validação de entrada e infra containerizada.
 
 ## Stack
 
 - **Runtime**: Node.js 24 (LTS)
 - **Framework**: NestJS 11 (TypeScript)
-- **ORM**: Prisma 7, `prisma-client-js` generator + `@prisma/adapter-pg` driver adapter
-- **Database**: PostgreSQL 16 (containerized)
+- **ORM**: Prisma 7, generator `prisma-client-js` + driver adapter `@prisma/adapter-pg`
+- **Banco de dados**: PostgreSQL 16 (containerizado)
 - **Cache**: Redis 7 via `@nestjs/cache-manager` + `@keyv/redis`
-- **Queue**: BullMQ (Redis-backed) via `@nestjs/bullmq`
-- **Validation**: `class-validator` / `class-transformer`
-- **Config**: `@nestjs/config` (`.env`-based)
-- **Auth**: JWT via `@nestjs/jwt` + `@nestjs/passport`, `bcrypt` for password hashing
+- **Fila**: BullMQ (backend Redis) via `@nestjs/bullmq`
+- **Validação**: `class-validator` / `class-transformer`
+- **Configuração**: `@nestjs/config` (baseado em `.env`)
+- **Autenticação**: JWT via `@nestjs/jwt` + `@nestjs/passport`, `bcrypt` para hash de senha
 
-## Architecture
+## Arquitetura
 
-Nest enforces a 3-layer separation per feature module:
+O Nest força uma separação em 3 camadas por módulo de feature:
 
 ```
-HTTP request
+Requisição HTTP
    │
    ▼
-Controller   → routing, param/body binding, no business logic
+Controller   → roteamento, binding de params/body, sem lógica de negócio
    │
    ▼
-Service      → business logic, calls the persistence layer
+Service      → lógica de negócio, chama a camada de persistência
    │
    ▼
-PrismaService → typed DB client (Prisma), wraps @prisma/client
+PrismaService → client de banco tipado (Prisma), encapsula @prisma/client
    │
    ▼
 PostgreSQL
 ```
 
-`PrismaService` is registered in a `@Global()` module (`src/prisma`), so any feature module can inject it without re-declaring it as a dependency. This mirrors how a shared DB/cache client is usually wired in larger Nest apps.
+O `PrismaService` é registrado em um módulo `@Global()` (`src/prisma`), então qualquer módulo de feature pode injetá-lo sem precisar redeclará-lo como dependência. Isso reflete como um client compartilhado de banco/cache costuma ser conectado em apps Nest maiores.
 
-Validation happens at the edge: a global `ValidationPipe` (`main.ts`) checks every incoming body against its DTO before it reaches the controller method, and strips unknown fields (`whitelist: true`).
+A validação acontece na borda: um `ValidationPipe` global (`main.ts`) valida cada body recebido contra o DTO correspondente antes dele chegar no método do controller, e remove campos não declarados (`whitelist: true`).
 
-### Caching
+### Cache
 
-`GET /tickets` and `GET /tickets/:id` are cached in Redis (30s TTL) through `TicketsService`, using the `CACHE_MANAGER` token from `@nestjs/cache-manager`. `create`, `update` and `remove` invalidate the relevant keys (`tickets:all` and `tickets:<id>`) so stale data isn't served after a write.
+`GET /tickets` e `GET /tickets/:id` são cacheados no Redis (TTL de 30s) através do `TicketsService`, usando o token `CACHE_MANAGER` do `@nestjs/cache-manager`. As operações `create`, `update` e `remove` invalidam as chaves correspondentes (`tickets:all` e `tickets:<id>`), evitando servir dado desatualizado após uma escrita.
 
-### Async SLA check (BullMQ)
+### Checagem assíncrona de SLA (BullMQ)
 
-Every created ticket enqueues a delayed job on the `sla` queue (`src/tickets/sla.processor.ts`). The delay is derived from `priority` (`src/tickets/sla.util.ts`) — shorter for `CRITICAL`, longer for `LOW`. When the job runs, `SlaProcessor` re-reads the ticket and logs a warning if it's still `OPEN`/`IN_PROGRESS`, or a confirmation if it was resolved in time. This models the "SLA monitoring" requirement without needing a full alerting stack: the job is a Nest provider (`WorkerHost`), backed by the same Redis instance as the cache.
+Todo ticket criado enfileira um job com atraso na fila `sla` (`src/tickets/sla.processor.ts`). O atraso é definido pela `priority` (`src/tickets/sla.util.ts`) — menor para `CRITICAL`, maior para `LOW`. Quando o job roda, o `SlaProcessor` relê o ticket e loga um aviso se ele ainda estiver `OPEN`/`IN_PROGRESS`, ou uma confirmação se foi resolvido a tempo. Isso modela o requisito de "monitoramento de SLA" sem precisar de uma stack completa de alertas: o job é um provider do Nest (`WorkerHost`), usando a mesma instância de Redis do cache.
 
 ```
 POST /tickets ──▶ TicketsService.create()
@@ -54,48 +54,48 @@ POST /tickets ──▶ TicketsService.create()
                        ├─▶ Postgres (insert)
                        └─▶ sla queue.add(delay = f(priority))
                                   │
-                                  ▼ (after delay)
+                                  ▼ (após o delay)
                           SlaProcessor.process()
                                   │
                                   ▼
-                       still OPEN? → log warning
-                       resolved?   → log ok
+                       ainda OPEN? → loga aviso
+                       resolvido?  → loga ok
 ```
 
-### Authentication
+### Autenticação
 
-`/tickets` routes are protected by `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)` at controller level), which delegates to a Passport `jwt` strategy. `POST /auth/register` hashes the password with bcrypt and returns a signed token; `POST /auth/login` verifies credentials the same way. The secret and expiry are read through `ConfigService` inside `JwtModule.registerAsync` — not `process.env` directly at module-decoration time, which would run before `ConfigModule` has loaded `.env` and sign tokens with a stale/default secret.
+As rotas de `/tickets` são protegidas pelo `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)` no nível do controller), que delega para uma strategy `jwt` do Passport. `POST /auth/register` faz hash da senha com bcrypt e retorna um token assinado; `POST /auth/login` verifica as credenciais da mesma forma. O segredo e o tempo de expiração são lidos via `ConfigService` dentro de `JwtModule.registerAsync` — não direto de `process.env` no momento da decoração do módulo, o que rodaria antes do `ConfigModule` carregar o `.env` e assinaria os tokens com um segredo desatualizado/padrão.
 
-Send the token as `Authorization: Bearer <token>` on any `/tickets` request.
+Envie o token como `Authorization: Bearer <token>` em qualquer requisição para `/tickets`.
 
-### Project structure
+### Estrutura do projeto
 
 ```
 src/
-  main.ts                 # app bootstrap, global pipes
-  app.module.ts            # root module: Config, Cache (Redis), Bull, Prisma, Auth, Tickets
+  main.ts                 # bootstrap da app, pipes globais
+  app.module.ts            # módulo raiz: Config, Cache (Redis), Bull, Prisma, Auth, Tickets
   auth/
     auth.controller.ts     # POST /auth/register, POST /auth/login
-    auth.service.ts        # password hashing, credential checks, token signing
-    jwt-auth.guard.ts       # guard used on protected controllers
+    auth.service.ts        # hash de senha, checagem de credenciais, assinatura do token
+    jwt-auth.guard.ts       # guard usado nos controllers protegidos
     strategies/jwt.strategy.ts
   prisma/
-    prisma.service.ts      # PrismaClient instance (adapter-pg), lifecycle hooks
-    prisma.module.ts       # @Global module exporting PrismaService
+    prisma.service.ts      # instância do PrismaClient (adapter-pg), hooks de ciclo de vida
+    prisma.module.ts       # módulo @Global que exporta o PrismaService
   tickets/
-    tickets.controller.ts  # REST routes for /tickets
-    tickets.service.ts     # business logic, cache read/invalidation, enqueues SLA job
-    sla.processor.ts       # BullMQ worker, checks ticket status after the SLA delay
-    sla.util.ts             # priority → delay mapping
+    tickets.controller.ts  # rotas REST de /tickets
+    tickets.service.ts     # lógica de negócio, leitura/invalidação de cache, enfileira job de SLA
+    sla.processor.ts       # worker do BullMQ, checa o status do ticket após o delay de SLA
+    sla.util.ts             # mapeamento prioridade → delay
     dto/
       create-ticket.dto.ts
       update-ticket.dto.ts
 prisma/
-  schema.prisma             # data model + generator/datasource config
-  migrations/                # versioned SQL migrations
+  schema.prisma             # modelo de dados + config de generator/datasource
+  migrations/                # migrations SQL versionadas
 ```
 
-## Domain model
+## Modelo de domínio
 
 ```prisma
 model User {
@@ -120,69 +120,69 @@ model Ticket {
 
 ## API
 
-| Method | Route            | Auth | Body               | Description                     |
-|--------|------------------|------|--------------------|----------------------------------|
-| POST   | `/auth/register` | –    | `RegisterDto`      | Creates a user, returns a JWT   |
-| POST   | `/auth/login`    | –    | `LoginDto`         | Verifies credentials, returns a JWT |
-| POST   | `/tickets`       | JWT  | `CreateTicketDto`  | Creates a ticket                |
-| GET    | `/tickets`       | JWT  | –                  | Lists tickets, newest first     |
-| GET    | `/tickets/:id`   | JWT  | –                  | Fetches one ticket (404 if missing) |
-| PATCH  | `/tickets/:id`   | JWT  | `UpdateTicketDto`  | Partial update, incl. status transitions |
-| DELETE | `/tickets/:id`   | JWT  | –                  | Deletes a ticket                |
+| Método | Rota              | Auth | Body               | Descrição                        |
+|--------|-------------------|------|--------------------|-----------------------------------|
+| POST   | `/auth/register`  | –    | `RegisterDto`      | Cria um usuário, retorna um JWT  |
+| POST   | `/auth/login`     | –    | `LoginDto`         | Verifica as credenciais, retorna um JWT |
+| POST   | `/tickets`        | JWT  | `CreateTicketDto`  | Cria um ticket                   |
+| GET    | `/tickets`        | JWT  | –                  | Lista os tickets, mais recentes primeiro |
+| GET    | `/tickets/:id`    | JWT  | –                  | Busca um ticket (404 se não existir) |
+| PATCH  | `/tickets/:id`    | JWT  | `UpdateTicketDto`  | Atualização parcial, incl. mudança de status |
+| DELETE | `/tickets/:id`    | JWT  | –                  | Remove um ticket                 |
 
-`CreateTicketDto` requires `title` (min 3 chars); `description` and `priority` are optional. `UpdateTicketDto` makes all `CreateTicketDto` fields optional and additionally accepts `status`. `RegisterDto` requires `name`, a valid `email`, and `password` (min 8 chars); `LoginDto` requires `email` and `password`.
+`CreateTicketDto` exige `title` (mínimo 3 caracteres); `description` e `priority` são opcionais. `UpdateTicketDto` torna todos os campos de `CreateTicketDto` opcionais e aceita adicionalmente `status`. `RegisterDto` exige `name`, um `email` válido e `password` (mínimo 8 caracteres); `LoginDto` exige `email` e `password`.
 
-## Running locally
+## Rodando localmente
 
-Prerequisites: Node.js 20+, Docker Desktop.
+Pré-requisitos: Node.js 20+, Docker Desktop.
 
 ```bash
-# 1. start PostgreSQL
+# 1. sobe o PostgreSQL
 docker run -d --name mini-nucleus-db \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=mini_nucleus \
   -p 5432:5432 postgres:16
 
-# 2. start Redis
+# 2. sobe o Redis
 docker run -d --name mini-nucleus-redis -p 6379:6379 redis:7-alpine
 
-# 3. install dependencies
+# 3. instala as dependências
 npm install
 
-# 4. configure environment
+# 4. configura as variáveis de ambiente
 cp .env.example .env
 
-# 5. apply migrations
+# 5. aplica as migrations
 npx prisma migrate dev
 
-# 6. run
+# 6. roda a aplicação
 npm run start:dev
 ```
 
-The API listens on `http://localhost:3000` by default. Inspect/edit data with:
+A API escuta em `http://localhost:3000` por padrão. Para inspecionar/editar os dados:
 
 ```bash
 npx prisma studio
 ```
 
-## Notes on Prisma 7
+## Notas sobre o Prisma 7
 
-The `prisma-client-js` generator here requires an explicit driver adapter (`@prisma/adapter-pg`) — `new PrismaClient()` without one throws `PrismaClientInitializationError` as of this version. `PrismaService` passes the adapter in its constructor, built from `DATABASE_URL`.
+O generator `prisma-client-js` usado aqui exige um driver adapter explícito (`@prisma/adapter-pg`) — `new PrismaClient()` sem ele lança `PrismaClientInitializationError` nesta versão. O `PrismaService` passa o adapter no construtor, montado a partir de `DATABASE_URL`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push/PR to `main`:
+`.github/workflows/ci.yml` roda em todo push/PR pra `main`:
 
-1. checkout + Node 24 setup (with npm cache)
+1. checkout + setup do Node 24 (com cache do npm)
 2. `npm ci`
-3. `eslint` (no auto-fix — fails the build on any issue)
-4. `prisma migrate deploy` against a Postgres service container
+3. `eslint` (sem autocorreção — quebra o build se houver qualquer problema)
+4. `prisma migrate deploy` contra um container de serviço Postgres
 5. `nest build`
-6. unit tests (`npm test`)
-7. e2e tests (`npm run test:e2e`)
+6. testes unitários (`npm test`)
+7. testes e2e (`npm run test:e2e`)
 
-Postgres and Redis run as GitHub Actions **service containers** (`postgres:16`, `redis:7-alpine`), each with a health check the job waits on before running migrations — this is what the e2e suite needs, since it boots the real `AppModule` (DB + cache + queue included), not a mocked one.
+Postgres e Redis rodam como **service containers** do GitHub Actions (`postgres:16`, `redis:7-alpine`), cada um com health check que o job aguarda antes de rodar as migrations — é o que a suíte e2e precisa, já que ela sobe o `AppModule` de verdade (banco + cache + fila inclusos), não uma versão mockada.
 
 ## Roadmap
 
-- Unit and e2e test coverage beyond the generated defaults
+- Cobertura de testes unitários e e2e além dos padrões gerados
